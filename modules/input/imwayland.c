@@ -850,6 +850,24 @@ gtk_im_context_wayland_set_cursor_location (GtkIMContext *context,
     gtk_event_controller_reset (GTK_EVENT_CONTROLLER (context_wayland->gesture));
 
   context_wayland->cursor_rect = *rect;
+
+  /* The rectangle is double-buffered state on the protocol side: it only
+   * takes effect on commit. Flushing it here while text input is active
+   * keeps the compositor/IM from positioning the next popup (e.g. the
+   * candidate window) at a stale rectangle.
+   *
+   * This is deliberately a cursor-only commit: it must not emit
+   * "retrieve-surrounding" (re-entrancy risk, this can be called from
+   * draw paths), must not touch surrounding/content state, and must not
+   * bump global->serial (cf. the text_input_done accounting, where a
+   * cursor-only commit has no matching reply).
+   */
+  if (global && global->current == context &&
+      context_wayland->enabled && context_wayland->window)
+    {
+      notify_cursor_location (context_wayland);
+      zwp_text_input_v3_commit (global->text_input);
+    }
 }
 
 static void
