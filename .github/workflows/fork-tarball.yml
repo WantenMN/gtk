@@ -1,0 +1,139 @@
+# GTK4 fork rolling tarball (traditional Linux packaging, no Nix).
+#
+# Push to gtk-4.22.4-fork -> meson build on ubuntu-24.04, pack the DESTDIR
+# payload (contents of stage/usr: bin/ lib/ share/) as
+# gtk4-linux-x86_64.tar.gz, upload to the shared rolling tag
+# `fork-linux-x86_64` (asset names are gtk4-prefixed so the gtk3 branch leg
+# can share the same release), fill version/hash into
+# dist/nix/gtk4-fork.nix, upload that too, then verify with a real
+# `nix build` of the uploaded URL.
+#
+# dotfiles consumes this via pkgs/update-fork-tarballs.sh which just downloads
+# the generated gtk4-fork.nix and points LD_LIBRARY_PATH at its lib/.
+# Replaces cachix-fork.yml (deleted).
+name: Fork Tarball (GTK4)
+
+on:
+  push:
+    branches:
+      - gtk-4.22.4-fork
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-tarball-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ROLL_TAG: fork-linux-x86_64
+  TARBALL: gtk4-linux-x86_64.tar.gz
+  NIX_ASSET: gtk4-fork.nix
+  NIXPKGS_TARBALL: https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst
+
+jobs:
+  tarball:
+    name: Build, publish and verify tarball
+    if: github.repository == 'WantenMN/gtk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+        with:
+          show-progress: false
+          ref: gtk-4.22.4-fork
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          dotnet: false
+          large-packages: false
+
+      - name: Install build dependencies
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get build-dep -y libgtk-4-1
+          sudo apt-get install -y meson ninja-build pkg-config sassc
+
+      - name: Compute rolling version
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          short_sha=$(git rev-parse --short HEAD)
+          ver_date=$(date -u +%Y.%m.%d)
+          echo "roll_version=4.22.4-${ver_date}-g${short_sha}" >> "$GITHUB_ENV"
+
+      - name: Meson setup (prefix /usr)
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          meson setup _build --prefix=/usr \
+            -Ddocumentation=false \
+            -Dbuild-tests=false \
+            -Dbuild-examples=false \
+            -Dbuild-demos=false
+
+      - name: Build
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: meson compile -C _build -j"$(nproc)"
+
+      - name: Install to stage and pack tarball
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          rm -rf stage
+          mkdir -p stage
+          DESTDIR="$PWD/stage" meson install -C _build
+          printf 'version=%s\ncommit=%s\n' "$roll_version" "$GITHUB_SHA" > stage/usr/BUILD-INFO.txt
+          tar -czf "$TARBALL" -C stage/usr .
+          ls -lh "$TARBALL"
+
+      - name: Smoke test staged payload
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          rm -rf /tmp/gtk4-smoke
+          mkdir -p /tmp/gtk4-smoke
+          tar -xzf "$TARBALL" -C /tmp/gtk4-smoke
+          test -f /tmp/gtk4-smoke/lib/x86_64-linux-gnu/libgtk-4.so.1 || test -f /tmp/gtk4-smoke/lib/libgtk-4.so.1
+          find /tmp/gtk4-smoke -name 'libgtk-4.so.1*' | head
+
+      - name: Install nix (verification only)
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Publish tarball to rolling release
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -f "$ROLL_TAG"
+          git push -f origin "$ROLL_TAG"
+          if ! gh release view "$ROLL_TAG" >/dev/null 2>&1; then
+            gh release create "$ROLL_TAG" \
+              --title "GTK fork rolling (linux x86_64)" \
+              --notes "Rolling prebuilt library tarballs (gtk3/gtk4 legs share this release; asset names are prefixed). Nix consumers fetch gtk4-fork.nix / gtk3-fork.nix." \
+              --target gtk-4.22.4-fork
+          fi
+          gh release upload "$ROLL_TAG" "$TARBALL" --clobber
+
+      - name: Generate + publish verified .nix and verify nix build
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="https://github.com/WantenMN/gtk/releases/download/${ROLL_TAG}/${TARBALL}"
+          sri=$(nix store prefetch-file --json "$url" | jq -r .hash)
+          echo "sri: $sri"
+          if [ -z "$sri" ] || [ "$sri" = "null" ]; then
+            echo "error: failed to prefetch $url" >&2
+            exit 1
+          fi
+          sed -i -E \
+            -e "s|version = \".*\";|version = \"${roll_version}\";|" \
+            -e "s|hash = \"sha256-.*\";|hash = \"${sri}\";|" \
+            "dist/nix/${NIX_ASSET}"
+          grep -nE 'version = |url = |hash = ' "dist/nix/${NIX_ASSET}"
+          gh release upload "$ROLL_TAG" "dist/nix/${NIX_ASSET}" --clobber
+          out=$(nix build -L --impure --no-link --print-out-paths --expr \
+            "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
+          echo "built: $out"
+          find "$out" -name 'libgtk-4.so.1*' | head
