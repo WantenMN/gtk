@@ -1,0 +1,228 @@
+# GTK3 fork rolling tarball (traditional Linux packaging, no Nix).
+#
+# Push to gtk-3.24.52-fork -> meson build on ubuntu-24.04, pack the DESTDIR
+# payload (contents of stage/usr: bin/ lib/ share/) as
+# gtk3-linux-x86_64.tar.gz, upload to the shared rolling tag
+# `fork-linux-x86_64` (asset names are gtk3-prefixed so the gtk4 branch leg
+# can share the same release), fill version/hash into
+# dist/nix/gtk3-fork.nix, upload that too, then verify with a real
+# `nix build` of the uploaded URL (includes immodules.cache regeneration).
+#
+# dotfiles consumes this via pkgs/update-fork-tarballs.sh which just downloads
+# the generated gtk3-fork.nix. Replaces cachix-fork.yml (deleted).
+name: Fork Tarball (GTK3)
+
+on:
+  push:
+    branches:
+      - gtk-3.24.52-fork
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-tarball-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ROLL_TAG: fork-linux-x86_64
+  # Fixed-name pointer consumed by dotfiles (overwritten every run).
+  NIX_ASSET: gtk3-fork.nix
+  # Versioned names (accumulate on the shared rolling release, pruned to
+  # newest 10 per product) are composed in the version step below.
+  NIXPKGS_TARBALL: https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst
+  KEEP_VERSIONS: "10"
+
+jobs:
+  tarball:
+    name: Build, publish and verify tarball
+    if: github.repository == 'WantenMN/gtk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+        with:
+          show-progress: false
+          ref: gtk-3.24.52-fork
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          dotnet: false
+          large-packages: false
+
+      - name: Install build dependencies
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          sudo apt-get update
+          # build-dep needs deb-src entries (absent from runner images).
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+            sudo apt-get update
+          fi
+          if ! sudo apt-get build-dep -y libgtk-3-0; then
+            sudo apt-get install -y meson ninja-build pkg-config \
+              libglib2.0-dev libcairo2-dev libpango1.0-dev \
+              libgdk-pixbuf-2.0-dev libatk1.0-dev libepoxy-dev \
+              libx11-dev libxcomposite-dev libxcursor-dev libxdamage-dev \
+              libxfixes-dev libxi-dev libxrandr-dev libxrender-dev \
+              libxinerama-dev libice-dev libsm-dev \
+              libwayland-dev wayland-protocols libcups2-dev \
+              libxkbcommon-dev libjpeg-dev libpng-dev libtiff-dev
+          else
+            sudo apt-get install -y meson ninja-build pkg-config
+          fi
+          # Not always pulled by build-dep on noble; required by gtk3 a11y
+          # (atk-bridge) and introspection (g-ir-scanner).
+          sudo apt-get install -y libatk-bridge2.0-dev gobject-introspection \
+            libgirepository1.0-dev
+          # Ubuntu 24.04 ships meson 1.3.x but gtk requires >= 1.5.0.
+          python3 -m pip install --user --upgrade --break-system-packages "meson>=1.5.0"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          meson --version
+
+      - name: Compute rolling version
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          short_sha=$(git rev-parse --short HEAD)
+          ver_date=$(date -u +%Y.%m.%d)
+          roll_version="3.24.52-${ver_date}-g${short_sha}"
+          echo "roll_version=${roll_version}" >> "$GITHUB_ENV"
+          # Versioned asset names accumulate on the rolling release (old
+          # versions are retained, pruned to newest $KEEP_VERSIONS at the end).
+          echo "TARBALL=gtk3-${roll_version}-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+          echo "NIX_VERSIONED=gtk3-fork-${roll_version}.nix" >> "$GITHUB_ENV"
+
+      - name: Meson setup (prefix /usr, plain libdir)
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          meson setup _build --prefix=/usr --libdir=lib \
+            -Ddemos=false \
+            -Dexamples=false \
+            -Dtests=false
+
+      - name: Build
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: meson compile -C _build -j"$(nproc)"
+
+      - name: Install to stage, pack tarball and generate immodules cache
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          rm -rf stage
+          mkdir -p stage
+          DESTDIR="$PWD/stage" meson install -C _build
+          # meson skips the cache under DESTDIR: generate it with the
+          # just-built query tool (ubuntu-linked, runs fine here; the nix
+          # drv only rewrites the baked absolute paths with sed).
+          mods=$(find stage/usr/lib/gtk-3.0 -name 'im-*.so' | sort)
+          test -n "$mods"
+          # shellcheck disable=SC2086: intentional word splitting of file list
+          LD_LIBRARY_PATH="$PWD/stage/usr/lib" \
+            stage/usr/bin/gtk-query-immodules-3.0 $mods \
+            > stage/usr/lib/gtk-3.0/3.0.0/immodules.cache
+          head -n 8 stage/usr/lib/gtk-3.0/3.0.0/immodules.cache
+          printf 'version=%s\ncommit=%s\n' "$roll_version" "$GITHUB_SHA" > stage/usr/BUILD-INFO.txt
+          tar -czf "$TARBALL" -C stage/usr .
+          ls -lh "$TARBALL"
+
+      - name: Smoke test staged payload
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          rm -rf /tmp/gtk3-smoke
+          mkdir -p /tmp/gtk3-smoke
+          tar -xzf "$TARBALL" -C /tmp/gtk3-smoke
+          test -f /tmp/gtk3-smoke/lib/libgtk-3.so.0
+          find /tmp/gtk3-smoke -name 'libgtk-3.so.0*' | head
+          echo "--- immodules in tarball ---"
+          find /tmp/gtk3-smoke -name 'immodules.cache' -o -name 'im-wayland.so' | sort
+          test -f /tmp/gtk3-smoke/lib/gtk-3.0/3.0.0/immodules.cache
+          head -n 12 /tmp/gtk3-smoke/lib/gtk-3.0/3.0.0/immodules.cache
+
+      - name: Install nix (verification only)
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Publish tarball to versioned release
+        # One release per version (never overwritten; gtk3/gtk4 legs share the
+        # repo but use product-prefixed tags). Re-runs of the same commit
+        # reuse the same tag (idempotent create + clobber upload).
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver_tag="gtk3-fork-${roll_version}"
+          echo "ver_tag=${ver_tag}" >> "$GITHUB_ENV"
+          git tag -f "$ver_tag"
+          git push -f origin "$ver_tag"
+          if ! gh release view "$ver_tag" >/dev/null 2>&1; then
+            gh release create "$ver_tag" \
+              --title "GTK3 fork ${roll_version}" \
+              --notes "Prebuilt gtk3 ${roll_version} from gtk-3.24.52-fork (${GITHUB_SHA})." \
+              --target gtk-3.24.52-fork
+          fi
+          gh release upload "$ver_tag" "$TARBALL" --clobber
+
+      - name: Generate + publish verified .nix and verify nix build
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="https://github.com/WantenMN/gtk/releases/download/${ver_tag}/${TARBALL}"
+          sri=$(nix store prefetch-file --json "$url" | jq -r .hash)
+          echo "sri: $sri"
+          if [ -z "$sri" ] || [ "$sri" = "null" ]; then
+            echo "error: failed to prefetch $url" >&2
+            exit 1
+          fi
+          sed -i -E \
+            -e "s|version = \".*\";|version = \"${roll_version}\";|" \
+            -e "s|url = \".*\";|url = \"${url}\";|" \
+            -e "s|hash = \"sha256-.*\";|hash = \"${sri}\";|" \
+            "dist/nix/${NIX_ASSET}"
+          grep -nE 'version = |url = |hash = ' "dist/nix/${NIX_ASSET}"
+          # Versioned asset (retained on its own release) + fixed-name pointer
+          # (rolling tag, dotfiles target).
+          cp "dist/nix/${NIX_ASSET}" "dist/nix/${NIX_VERSIONED}"
+          gh release upload "$ver_tag" "dist/nix/${NIX_VERSIONED}" --clobber
+          git tag -f "$ROLL_TAG"
+          git push -f origin "$ROLL_TAG"
+          if ! gh release view "$ROLL_TAG" >/dev/null 2>&1; then
+            gh release create "$ROLL_TAG" \
+              --title "GTK fork rolling pointers" \
+              --notes "Fixed-name .nix pointers to the newest versioned releases (gtk3/gtk4 legs share this page). Each version has its own release; old versions are retained (newest 10 per product)." \
+              --target gtk-3.24.52-fork
+          fi
+          gh release upload "$ROLL_TAG" "dist/nix/${NIX_ASSET}" --clobber
+          out=$(nix build -L --impure --no-link --print-out-paths --expr \
+            "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
+          echo "built: $out"
+          find "$out" -name 'libgtk-3.so.0*' | head
+          # Cache must reference the store, never /usr.
+          grep -q "$out" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+          ! grep -q '/usr/lib' "$out/lib/gtk-3.0/3.0.0/immodules.cache" || { echo "stale /usr paths in cache" >&2; exit 1; }
+
+      - name: Prune old versioned releases (keep newest)
+        # gtk3 and gtk4 legs use product-prefixed version tags in one repo;
+        # prune only this leg's product. Old versions are separate releases so
+        # stale machines can reinstall the exact version their dotfiles pin;
+        # only releases beyond the newest $KEEP_VERSIONS are deleted. The
+        # rolling pointer release is never touched.
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tags=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq -r 'sort_by(.createdAt) | reverse | .[].tagName' \
+            | grep -E '^gtk3-fork-' || true)
+          count=$(echo "$tags" | grep -c . || true)
+          count=${count:-0}
+          if [ "$count" -gt "$KEEP_VERSIONS" ]; then
+            echo "$tags" | tail -n +"$((KEEP_VERSIONS + 1))" | while IFS= read -r t; do
+              [ -n "$t" ] || continue
+              echo "pruning old versioned release: $t"
+              gh release delete "$t" --cleanup-tag -y
+            done
+          else
+            echo "keeping all $count versioned release(s)"
+          fi
