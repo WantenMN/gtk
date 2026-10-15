@@ -16,7 +16,7 @@ set -euo pipefail
 pacman -Syu --noconfirm
 pacman -S --noconfirm --needed \
   base-devel meson ninja pkgconf sassc git cmake \
-  glib2 cairo pango gdk-pixbuf2 graphene libepoxy \
+  glib2 glib2-devel cairo pango gdk-pixbuf2 graphene libepoxy \
   wayland wayland-protocols libxkbcommon cups vulkan-headers \
   fribidi harfbuzz \
   libjpeg-turbo libpng libtiff libdrm vulkan-icd-loader shaderc \
