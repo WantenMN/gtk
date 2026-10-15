@@ -99,12 +99,22 @@ jobs:
         shell: bash --noprofile --norc -eo pipefail {0}
         run: meson compile -C _build -j"$(nproc)"
 
-      - name: Install to stage and pack tarball
+      - name: Install to stage, pack tarball and generate immodules cache
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           rm -rf stage
           mkdir -p stage
           DESTDIR="$PWD/stage" meson install -C _build
+          # meson skips the cache under DESTDIR: generate it with the
+          # just-built query tool (ubuntu-linked, runs fine here; the nix
+          # drv only rewrites the baked absolute paths with sed).
+          mods=$(find stage/usr/lib/gtk-3.0 -name 'im-*.so' | sort)
+          test -n "$mods"
+          # shellcheck disable=SC2086: intentional word splitting of file list
+          LD_LIBRARY_PATH="$PWD/stage/usr/lib" \
+            stage/usr/bin/gtk-query-immodules-3.0 $mods \
+            > stage/usr/lib/gtk-3.0/3.0.0/immodules.cache
+          head -n 8 stage/usr/lib/gtk-3.0/3.0.0/immodules.cache
           printf 'version=%s\ncommit=%s\n' "$roll_version" "$GITHUB_SHA" > stage/usr/BUILD-INFO.txt
           tar -czf "$TARBALL" -C stage/usr .
           ls -lh "$TARBALL"
