@@ -143,27 +143,32 @@ jobs:
       - name: Install nix (verification only)
         uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
 
-      - name: Publish tarball to rolling release
+      - name: Publish tarball to versioned release
+        # One release per version (never overwritten; gtk3/gtk4 legs share the
+        # repo but use product-prefixed tags). Re-runs of the same commit
+        # reuse the same tag (idempotent create + clobber upload).
         shell: bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git tag -f "$ROLL_TAG"
-          git push -f origin "$ROLL_TAG"
-          if ! gh release view "$ROLL_TAG" >/dev/null 2>&1; then
-            gh release create "$ROLL_TAG" \
-              --title "GTK fork rolling (linux x86_64)" \
-              --notes "Rolling prebuilt library tarballs (gtk3/gtk4 legs share this release; asset names are prefixed). Nix consumers fetch gtk4-fork.nix / gtk3-fork.nix." \
+          ver_tag="gtk3-fork-${roll_version}"
+          echo "ver_tag=${ver_tag}" >> "$GITHUB_ENV"
+          git tag -f "$ver_tag"
+          git push -f origin "$ver_tag"
+          if ! gh release view "$ver_tag" >/dev/null 2>&1; then
+            gh release create "$ver_tag" \
+              --title "GTK3 fork ${roll_version}" \
+              --notes "Prebuilt gtk3 ${roll_version} from gtk-3.24.52-fork (${GITHUB_SHA})." \
               --target gtk-3.24.52-fork
           fi
-          gh release upload "$ROLL_TAG" "$TARBALL" --clobber
+          gh release upload "$ver_tag" "$TARBALL" --clobber
 
       - name: Generate + publish verified .nix and verify nix build
         shell: bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          url="https://github.com/WantenMN/gtk/releases/download/${ROLL_TAG}/${TARBALL}"
+          url="https://github.com/WantenMN/gtk/releases/download/${ver_tag}/${TARBALL}"
           sri=$(nix store prefetch-file --json "$url" | jq -r .hash)
           echo "sri: $sri"
           if [ -z "$sri" ] || [ "$sri" = "null" ]; then
@@ -176,9 +181,18 @@ jobs:
             -e "s|hash = \"sha256-.*\";|hash = \"${sri}\";|" \
             "dist/nix/${NIX_ASSET}"
           grep -nE 'version = |url = |hash = ' "dist/nix/${NIX_ASSET}"
-          # Versioned asset (retained) + fixed-name pointer (dotfiles target).
+          # Versioned asset (retained on its own release) + fixed-name pointer
+          # (rolling tag, dotfiles target).
           cp "dist/nix/${NIX_ASSET}" "dist/nix/${NIX_VERSIONED}"
-          gh release upload "$ROLL_TAG" "dist/nix/${NIX_VERSIONED}" --clobber
+          gh release upload "$ver_tag" "dist/nix/${NIX_VERSIONED}" --clobber
+          git tag -f "$ROLL_TAG"
+          git push -f origin "$ROLL_TAG"
+          if ! gh release view "$ROLL_TAG" >/dev/null 2>&1; then
+            gh release create "$ROLL_TAG" \
+              --title "GTK fork rolling pointers" \
+              --notes "Fixed-name .nix pointers to the newest versioned releases (gtk3/gtk4 legs share this page). Each version has its own release; old versions are retained (newest 10 per product)." \
+              --target gtk-3.24.52-fork
+          fi
           gh release upload "$ROLL_TAG" "dist/nix/${NIX_ASSET}" --clobber
           out=$(nix build -L --impure --no-link --print-out-paths --expr \
             "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
@@ -188,27 +202,27 @@ jobs:
           grep -q "$out" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
           ! grep -q '/usr/lib' "$out/lib/gtk-3.0/3.0.0/immodules.cache" || { echo "stale /usr paths in cache" >&2; exit 1; }
 
-      - name: Prune old versions (keep newest)
-        # gtk3 and gtk4 legs share this release (prefixed asset names); prune
-        # only this leg's product. Old versions stay available so stale
-        # machines can reinstall the exact version their dotfiles pin.
+      - name: Prune old versioned releases (keep newest)
+        # gtk3 and gtk4 legs use product-prefixed version tags in one repo;
+        # prune only this leg's product. Old versions are separate releases so
+        # stale machines can reinstall the exact version their dotfiles pin;
+        # only releases beyond the newest $KEEP_VERSIONS are deleted. The
+        # rolling pointer release is never touched.
         shell: bash --noprofile --norc -eo pipefail {0}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tars=$(gh release view "$ROLL_TAG" --json assets \
-            --jq -r '.assets | sort_by(.createdAt) | reverse | .[].name' \
-            | grep -E '^gtk3-.*-linux-x86_64\.tar\.gz$' || true)
-          count=$(echo "$tars" | grep -c . || true)
+          tags=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq -r 'sort_by(.createdAt) | reverse | .[].tagName' \
+            | grep -E '^gtk3-fork-' || true)
+          count=$(echo "$tags" | grep -c . || true)
           count=${count:-0}
           if [ "$count" -gt "$KEEP_VERSIONS" ]; then
-            echo "$tars" | tail -n +"$((KEEP_VERSIONS + 1))" | while IFS= read -r t; do
+            echo "$tags" | tail -n +"$((KEEP_VERSIONS + 1))" | while IFS= read -r t; do
               [ -n "$t" ] || continue
-              ver=$(echo "$t" | sed -E 's/^gtk3-(.*)-linux-x86_64\.tar\.gz$/\1/')
-              echo "pruning old version: $t"
-              gh release delete-asset "$ROLL_TAG" "$t" -y
-              gh release delete-asset "$ROLL_TAG" "gtk3-fork-${ver}.nix" -y || true
+              echo "pruning old versioned release: $t"
+              gh release delete "$t" --cleanup-tag -y
             done
           else
-            echo "keeping all $count version(s)"
+            echo "keeping all $count versioned release(s)"
           fi
