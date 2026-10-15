@@ -15,12 +15,14 @@ set -euo pipefail
 
 pacman -Syu --noconfirm
 pacman -S --noconfirm --needed \
-  base-devel meson ninja pkgconf sassc git \
+  base-devel meson ninja pkgconf sassc git cmake \
   glib2 cairo pango gdk-pixbuf2 graphene libepoxy \
   wayland wayland-protocols libxkbcommon cups vulkan-headers \
-  fribidi harfbuzz gst-plugins-base-libs \
+  fribidi harfbuzz \
   libjpeg-turbo libpng libtiff libdrm vulkan-icd-loader \
-  libx11 libxi libxrandr gobject-introspection
+  libx11 libxi libxrandr libxcursor libxext libxfixes libxdamage \
+  libxcomposite libxinerama libice libsm \
+  gobject-introspection
 
 cd "$SRC_DIR"
 rm -rf _build stage
