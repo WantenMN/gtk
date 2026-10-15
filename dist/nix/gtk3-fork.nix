@@ -33,10 +33,9 @@
 # uploaded as release asset `gtk3-fork.nix`. This file in dotfiles is a copy
 # fetched by pkgs/update-fork-tarballs.sh — do not edit hash by hand.
 #
-# GTK3 loads im-wayland.so via absolute paths from immodules.cache, so the
-# cache is regenerated in postFixup (after patchelf, when the just-installed
-# gtk-query-immodules-3.0 can run). Never ship the /usr-path cache from the
-# tarball.
+# GTK3 loads im-wayland.so via absolute paths from immodules.cache. The
+# tarball ships a cache with baked /usr/lib paths; the installPhase rewrites
+# the prefix to $out with sed (pure text, no execution).
 stdenv.mkDerivation rec {
   pname = "gtk3-fork";
   version = "0.0.0-unset";
@@ -89,21 +88,13 @@ stdenv.mkDerivation rec {
       [ -e "$d" ] && cp -r "$d" "$out/"
     done
 
-    # Drop the shipped cache (absolute /usr paths); regenerated below.
-    rm -f $out/lib/gtk-3.0/3.0.0/immodules.cache \
-      $out/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules.cache
+    cache="lib/gtk-3.0/3.0.0/immodules.cache"
+    test -f "$cache"
+    mkdir -p "$out/lib/gtk-3.0/3.0.0"
+    sed "s|/usr/lib|$out/lib|g" "$cache" > "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+    grep -q "$out/lib" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
 
     runHook postInstall
-  '';
-
-  # Runs after autoPatchelf: the query tool is now nix-linked and executable
-  # inside the sandbox. Mirrors nixpkgs gtk3 postInstall.
-  postFixup = ''
-    if [ -x "$out/bin/gtk-query-immodules-3.0" ]; then
-      echo "regenerating gtk3 immodules.cache"
-      GTK_PATH="$out/lib/gtk-3.0/3.0.0" \
-        "$out/bin/gtk-query-immodules-3.0" > "$out/lib/gtk-3.0/3.0.0/immodules.cache"
-    fi
   '';
 
   meta = {
