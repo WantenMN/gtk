@@ -1,0 +1,185 @@
+# GTK4 fork rolling tarball (traditional Linux packaging, no Nix).
+#
+# Push to gtk-4.22.4-fork -> meson build on ubuntu-24.04, pack the DESTDIR
+# payload (contents of stage/usr: bin/ lib/ share/) as
+# gtk4-linux-x86_64.tar.gz, upload to the shared rolling tag
+# `fork-linux-x86_64` (asset names are gtk4-prefixed so the gtk3 branch leg
+# can share the same release), fill version/hash into
+# dist/nix/gtk4-fork.nix, upload that too, then verify with a real
+# `nix build` of the uploaded URL.
+#
+# dotfiles consumes this via pkgs/update-fork-tarballs.sh which just downloads
+# the generated gtk4-fork.nix and points LD_LIBRARY_PATH at its lib/.
+# Replaces cachix-fork.yml (deleted).
+name: Fork Tarball (GTK4)
+
+on:
+  push:
+    branches:
+      - gtk-4.22.4-fork
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-tarball-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ROLL_TAG: fork-linux-x86_64
+  # Fixed-name pointer consumed by dotfiles (overwritten every run).
+  NIX_ASSET: gtk4-fork.nix
+  # Versioned names (accumulate on the shared rolling release, pruned to
+  # newest 10 per product) are composed in the version step below.
+  NIXPKGS_TARBALL: https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst
+  KEEP_VERSIONS: "10"
+
+jobs:
+  tarball:
+    name: Build, publish and verify tarball
+    if: github.repository == 'WantenMN/gtk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+        with:
+          show-progress: false
+          ref: gtk-4.22.4-fork
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          dotnet: false
+          large-packages: false
+
+      - name: Compute rolling version
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          short_sha=$(git rev-parse --short HEAD)
+          ver_date=$(date -u +%Y.%m.%d)
+          roll_version="4.22.4-${ver_date}-g${short_sha}"
+          echo "roll_version=${roll_version}" >> "$GITHUB_ENV"
+          # Versioned asset names accumulate on the rolling release (old
+          # versions are retained, pruned to newest $KEEP_VERSIONS at the end).
+          echo "TARBALL=gtk4-${roll_version}-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+          echo "NIX_VERSIONED=gtk4-fork-${roll_version}.nix" >> "$GITHUB_ENV"
+
+      - name: Build in Arch container (needs glib>=2.84/pango>=1.56)
+        # ubuntu-24.04's frozen glib 2.80 / pango 1.52 are too old for gtk
+        # 4.22 (meson would fall back to the pango subproject, which itself
+        # needs glib 2.88). Arch rolling has everything; see the script.
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          chmod +x .github/scripts/build-gtk4-arch.sh
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e SRC_DIR=/src \
+            -e ROLL_VERSION="$roll_version" \
+            -e TARBALL="$TARBALL" \
+            -e GITHUB_SHA="$GITHUB_SHA" \
+            archlinux/archlinux:base-devel \
+            bash .github/scripts/build-gtk4-arch.sh
+
+      - name: Smoke test staged payload
+        shell: bash --noprofile --norc -eo pipefail {0}
+        run: |
+          rm -rf /tmp/gtk4-smoke
+          mkdir -p /tmp/gtk4-smoke
+          tar -xzf "$TARBALL" -C /tmp/gtk4-smoke
+          test -f /tmp/gtk4-smoke/lib/libgtk-4.so.1
+          find /tmp/gtk4-smoke -name 'libgtk-4.so.1*' | head
+
+      - name: Install nix (verification only)
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
+
+      - name: Publish tarball to versioned release
+        # One release per version (never overwritten; gtk3/gtk4 legs share the
+        # repo but use product-prefixed tags). Re-runs of the same commit
+        # reuse the same tag (idempotent create + clobber upload).
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver_tag="gtk4-fork-${roll_version}"
+          echo "ver_tag=${ver_tag}" >> "$GITHUB_ENV"
+          git tag -f "$ver_tag"
+          git push -f origin "$ver_tag"
+          if ! gh release view "$ver_tag" >/dev/null 2>&1; then
+            gh release create "$ver_tag" \
+              --title "GTK4 fork ${roll_version}" \
+              --notes "Prebuilt gtk4 ${roll_version} from gtk-4.22.4-fork (${GITHUB_SHA})." \
+              --target gtk-4.22.4-fork
+          fi
+          gh release upload "$ver_tag" "$TARBALL" --clobber
+
+      - name: Generate + publish verified .nix and verify nix build
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          url="https://github.com/WantenMN/gtk/releases/download/${ver_tag}/${TARBALL}"
+          sri=$(nix store prefetch-file --json "$url" | jq -r .hash)
+          echo "sri: $sri"
+          if [ -z "$sri" ] || [ "$sri" = "null" ]; then
+            echo "error: failed to prefetch $url" >&2
+            exit 1
+          fi
+          sed -i -E \
+            -e "s|version = \".*\";|version = \"${roll_version}\";|" \
+            -e "s|url = \".*\";|url = \"${url}\";|" \
+            -e "s|hash = \"sha256-.*\";|hash = \"${sri}\";|" \
+            "dist/nix/${NIX_ASSET}"
+          grep -nE 'version = |url = |hash = ' "dist/nix/${NIX_ASSET}"
+          # Versioned asset (retained on its own release) + fixed-name pointer
+          # (rolling tag, dotfiles target).
+          cp "dist/nix/${NIX_ASSET}" "dist/nix/${NIX_VERSIONED}"
+          gh release upload "$ver_tag" "dist/nix/${NIX_VERSIONED}" --clobber
+          git tag -f "$ROLL_TAG"
+          git push -f origin "$ROLL_TAG"
+          if ! gh release view "$ROLL_TAG" >/dev/null 2>&1; then
+            gh release create "$ROLL_TAG" \
+              --title "GTK fork rolling pointers" \
+              --notes "Fixed-name .nix pointers to the newest versioned releases (gtk3/gtk4 legs share this page). Each version has its own release; old versions are retained (newest 10 per product)." \
+              --target gtk-4.22.4-fork
+          fi
+          gh release upload "$ROLL_TAG" "dist/nix/${NIX_ASSET}" --clobber
+          out=$(nix build -L --impure --no-link --print-out-paths --expr \
+            "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
+          echo "built: $out"
+          find "$out" -name 'libgtk-4.so.1*' | head
+          # The lib was built against Arch's glibc: refuse GLIBC symbols newer
+          # than what nixpkgs glibc provides (autoPatchelf cannot fix those).
+          nix_glibc=$(nix eval --impure --raw --expr \
+            "(import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}).glibc.version")
+          echo "nixpkgs glibc: $nix_glibc"
+          lib=$(find "$out" -name 'libgtk-4.so.1.*' | head -n 1)
+          max_need=$(readelf -V "$lib" | grep -oP 'GLIBC_2\.\d+' | sort -Vu | tail -n 1)
+          echo "max GLIBC need: $max_need (have $nix_glibc)"
+          [ "$(printf '%s\n%s' "$max_need" "GLIBC_$nix_glibc" | sort -V | tail -n 1)" = "GLIBC_$nix_glibc" ]
+
+      - name: Prune old versioned releases (keep newest)
+        # gtk3 and gtk4 legs use product-prefixed version tags in one repo;
+        # prune only this leg's product. Old versions are separate releases so
+        # stale machines can reinstall the exact version their dotfiles pin;
+        # only releases beyond the newest $KEEP_VERSIONS are deleted. The
+        # rolling pointer release is never touched.
+        shell: bash --noprofile --norc -eo pipefail {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tags=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq -r 'sort_by(.createdAt) | reverse | .[].tagName' \
+            | grep -E '^gtk4-fork-' || true)
+          count=$(echo "$tags" | grep -c . || true)
+          count=${count:-0}
+          if [ "$count" -gt "$KEEP_VERSIONS" ]; then
+            echo "$tags" | tail -n +"$((KEEP_VERSIONS + 1))" | while IFS= read -r t; do
+              [ -n "$t" ] || continue
+              echo "pruning old versioned release: $t"
+              gh release delete "$t" --cleanup-tag -y
+            done
+          else
+            echo "keeping all $count versioned release(s)"
+          fi
