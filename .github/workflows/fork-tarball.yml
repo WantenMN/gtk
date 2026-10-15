@@ -67,7 +67,7 @@ jobs:
       - name: Meson setup (prefix /usr)
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
-          meson setup _build --prefix=/usr \
+          meson setup _build --prefix=/usr --libdir=lib \
             -Ddocumentation=false \
             -Dbuild-tests=false \
             -Dbuild-examples=false \
@@ -93,7 +93,7 @@ jobs:
           rm -rf /tmp/gtk3-smoke
           mkdir -p /tmp/gtk3-smoke
           tar -xzf "$TARBALL" -C /tmp/gtk3-smoke
-          test -f /tmp/gtk3-smoke/lib/x86_64-linux-gnu/libgtk-3.so.0 || test -f /tmp/gtk3-smoke/lib/libgtk-3.so.0
+          test -f /tmp/gtk3-smoke/lib/libgtk-3.so.0
           find /tmp/gtk3-smoke -name 'libgtk-3.so.0*' | head
           find /tmp/gtk3-smoke -name 'immodules.cache' | head
 
