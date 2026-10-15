@@ -68,7 +68,7 @@ jobs:
       - name: Meson setup (prefix /usr)
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
-          meson setup _build --prefix=/usr \
+          meson setup _build --prefix=/usr --libdir=lib \
             -Ddocumentation=false \
             -Dbuild-tests=false \
             -Dbuild-examples=false \
@@ -94,7 +94,7 @@ jobs:
           rm -rf /tmp/gtk4-smoke
           mkdir -p /tmp/gtk4-smoke
           tar -xzf "$TARBALL" -C /tmp/gtk4-smoke
-          test -f /tmp/gtk4-smoke/lib/x86_64-linux-gnu/libgtk-4.so.1 || test -f /tmp/gtk4-smoke/lib/libgtk-4.so.1
+          test -f /tmp/gtk4-smoke/lib/libgtk-4.so.1
           find /tmp/gtk4-smoke -name 'libgtk-4.so.1*' | head
 
       - name: Install nix (verification only)
