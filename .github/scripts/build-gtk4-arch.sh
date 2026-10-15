@@ -19,7 +19,7 @@ pacman -S --noconfirm --needed \
   glib2 cairo pango gdk-pixbuf2 graphene libepoxy \
   wayland wayland-protocols libxkbcommon cups vulkan-headers \
   fribidi harfbuzz \
-  libjpeg-turbo libpng libtiff libdrm vulkan-icd-loader \
+  libjpeg-turbo libpng libtiff libdrm vulkan-icd-loader shaderc \
   libx11 libxi libxrandr libxcursor libxext libxfixes libxdamage \
   libxcomposite libxinerama libice libsm \
   gobject-introspection
