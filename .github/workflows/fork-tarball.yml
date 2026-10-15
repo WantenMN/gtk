@@ -117,7 +117,10 @@ jobs:
           tar -xzf "$TARBALL" -C /tmp/gtk3-smoke
           test -f /tmp/gtk3-smoke/lib/libgtk-3.so.0
           find /tmp/gtk3-smoke -name 'libgtk-3.so.0*' | head
-          find /tmp/gtk3-smoke -name 'immodules.cache' | head
+          echo "--- immodules in tarball ---"
+          find /tmp/gtk3-smoke -name 'immodules.cache' -o -name 'im-wayland.so' | sort
+          test -f /tmp/gtk3-smoke/lib/gtk-3.0/3.0.0/immodules.cache
+          head -n 12 /tmp/gtk3-smoke/lib/gtk-3.0/3.0.0/immodules.cache
 
       - name: Install nix (verification only)
         uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3 # v31.10.6
