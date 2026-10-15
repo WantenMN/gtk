@@ -88,11 +88,16 @@ stdenv.mkDerivation rec {
       [ -e "$d" ] && cp -r "$d" "$out/"
     done
 
-    cache="lib/gtk-3.0/3.0.0/immodules.cache"
-    test -f "$cache"
+    cache=$(find . -name immodules.cache | head -n 1)
+    test -n "$cache"
+    mod=$(find . -name 'im-wayland.so' | head -n 1)
+    test -n "$mod"
+    reldir=$(dirname "$mod" | sed 's|^\./||')
+    olddir=$(grep -o '"/[^"]*im-wayland\.so' "$cache" | head -n 1 | sed 's|"$||; s|/im-wayland\.so$||')
+    test -n "$olddir"
     mkdir -p "$out/lib/gtk-3.0/3.0.0"
-    sed "s|/usr/lib|$out/lib|g" "$cache" > "$out/lib/gtk-3.0/3.0.0/immodules.cache"
-    grep -q "$out/lib" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+    sed "s|$olddir|$out/$reldir|g" "$cache" > "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+    grep -q "$out/" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
 
     runHook postInstall
   '';
