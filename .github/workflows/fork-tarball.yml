@@ -51,32 +51,6 @@ jobs:
           dotnet: false
           large-packages: false
 
-      - name: Install build dependencies
-        shell: bash --noprofile --norc -eo pipefail {0}
-        run: |
-          sudo apt-get update
-          # build-dep needs deb-src entries (absent from runner images).
-          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-            sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
-            sudo apt-get update
-          fi
-          if ! sudo apt-get build-dep -y libgtk-4-1; then
-            sudo apt-get install -y meson ninja-build pkg-config sassc \
-              libglib2.0-dev libcairo2-dev libpango1.0-dev \
-              libgdk-pixbuf-2.0-dev libgraphene-1.0-dev libepoxy-dev \
-              libwayland-dev wayland-protocols libxkbcommon-dev \
-              libcups2-dev libvulkan-dev libfribidi-dev libharfbuzz-dev \
-              libjpeg-dev libpng-dev libtiff-dev libdrm-dev \
-              libgstreamer-plugins-base1.0-dev \
-              libx11-dev libxi-dev libxrandr-dev
-          else
-            sudo apt-get install -y meson ninja-build pkg-config sassc
-          fi
-          # Ubuntu 24.04 ships meson 1.3.x but gtk requires >= 1.5.0.
-          python3 -m pip install --user --upgrade --break-system-packages "meson>=1.5.0"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          meson --version
-
       - name: Compute rolling version
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
@@ -84,28 +58,21 @@ jobs:
           ver_date=$(date -u +%Y.%m.%d)
           echo "roll_version=4.22.4-${ver_date}-g${short_sha}" >> "$GITHUB_ENV"
 
-      - name: Meson setup (prefix /usr)
+      - name: Build in Arch container (needs glib>=2.84/pango>=1.56)
+        # ubuntu-24.04's frozen glib 2.80 / pango 1.52 are too old for gtk
+        # 4.22 (meson would fall back to the pango subproject, which itself
+        # needs glib 2.88). Arch rolling has everything; see the script.
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
-          meson setup _build --prefix=/usr --libdir=lib \
-            -Ddocumentation=false \
-            -Dbuild-tests=false \
-            -Dbuild-examples=false \
-            -Dbuild-demos=false
-
-      - name: Build
-        shell: bash --noprofile --norc -eo pipefail {0}
-        run: meson compile -C _build -j"$(nproc)"
-
-      - name: Install to stage and pack tarball
-        shell: bash --noprofile --norc -eo pipefail {0}
-        run: |
-          rm -rf stage
-          mkdir -p stage
-          DESTDIR="$PWD/stage" meson install -C _build
-          printf 'version=%s\ncommit=%s\n' "$roll_version" "$GITHUB_SHA" > stage/usr/BUILD-INFO.txt
-          tar -czf "$TARBALL" -C stage/usr .
-          ls -lh "$TARBALL"
+          chmod +x .github/scripts/build-gtk4-arch.sh
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e SRC_DIR=/src \
+            -e ROLL_VERSION="$roll_version" \
+            -e TARBALL="$TARBALL" \
+            -e GITHUB_SHA="$GITHUB_SHA" \
+            archlinux/archlinux:base-devel \
+            bash .github/scripts/build-gtk4-arch.sh
 
       - name: Smoke test staged payload
         shell: bash --noprofile --norc -eo pipefail {0}
@@ -156,3 +123,12 @@ jobs:
             "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
           echo "built: $out"
           find "$out" -name 'libgtk-4.so.1*' | head
+          # The lib was built against Arch's glibc: refuse GLIBC symbols newer
+          # than what nixpkgs glibc provides (autoPatchelf cannot fix those).
+          nix_glibc=$(nix eval --impure --raw --expr \
+            "(import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}).glibc.version")
+          echo "nixpkgs glibc: $nix_glibc"
+          lib=$(find "$out" -name 'libgtk-4.so.1.*' | head -n 1)
+          max_need=$(readelf -V "$lib" | grep -oP 'GLIBC_2\.\d+' | sort -Vu | tail -n 1)
+          echo "max GLIBC need: $max_need (have $nix_glibc)"
+          [ "$(printf '%s\n%s' "$max_need" "GLIBC_$nix_glibc" | sort -V | tail -n 1)" = "GLIBC_$nix_glibc" ]
