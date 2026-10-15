@@ -35,6 +35,11 @@ meson setup _build --prefix=/usr --libdir=lib \
   -Dintrospection=disabled
 meson compile -C _build -j"$(nproc)"
 DESTDIR="$SRC_DIR/stage" meson install -C _build
+# nixpkgs has no libjpeg.so.8 provider (its turbo/mozjpeg ship .so.62);
+# Arch's turbo provides .so.8 (libc-only). Ship it so autoPatchelf resolves
+# from our own lib/ (same pattern as niri's libdisplay-info).
+cp -P /usr/lib/libjpeg.so.8* "$SRC_DIR/stage/usr/lib/"
+ls -l "$SRC_DIR/stage/usr/lib/" | grep -E "libjpeg|libgtk-4" | head
 printf 'version=%s\ncommit=%s\nbuilder=archlinux:base-devel\n' \
   "$ROLL_VERSION" "${GITHUB_SHA:-unknown}" > stage/usr/BUILD-INFO.txt
 tar -czf "$TARBALL" -C stage/usr .

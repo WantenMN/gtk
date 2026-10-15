@@ -14,7 +14,6 @@
 , libxkbcommon
 , libpng
 , libtiff
-, libjpeg_turbo
 , libdrm
 , fribidi
 , harfbuzz
@@ -69,7 +68,6 @@ stdenv.mkDerivation rec {
     libxkbcommon
     libpng
     libtiff
-    libjpeg_turbo
     libdrm
     fribidi
     harfbuzz
