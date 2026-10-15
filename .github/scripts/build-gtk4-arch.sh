@@ -29,7 +29,7 @@ meson setup _build --prefix=/usr --libdir=lib \
   -Dbuild-tests=false \
   -Dbuild-examples=false \
   -Dbuild-demos=false \
-  -Dintrospection=false
+  -Dintrospection=disabled
 meson compile -C _build -j"$(nproc)"
 DESTDIR="$SRC_DIR/stage" meson install -C _build
 printf 'version=%s\ncommit=%s\nbuilder=archlinux:base-devel\n' \
