@@ -83,14 +83,13 @@ jobs:
           ver_date=$(date -u +%Y.%m.%d)
           echo "roll_version=3.24.52-${ver_date}-g${short_sha}" >> "$GITHUB_ENV"
 
-      - name: Meson setup (prefix /usr)
+      - name: Meson setup (prefix /usr, plain libdir)
         shell: bash --noprofile --norc -eo pipefail {0}
         run: |
           meson setup _build --prefix=/usr --libdir=lib \
-            -Ddocumentation=false \
-            -Dbuild-tests=false \
-            -Dbuild-examples=false \
-            -Dbuild-demos=false
+            -Ddemos=false \
+            -Dexamples=false \
+            -Dtests=false
 
       - name: Build
         shell: bash --noprofile --norc -eo pipefail {0}
