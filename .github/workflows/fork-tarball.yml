@@ -71,8 +71,10 @@ jobs:
           else
             sudo apt-get install -y meson ninja-build pkg-config
           fi
-          # Not always pulled by build-dep on noble; required by gtk3 a11y.
-          sudo apt-get install -y libatk-bridge2.0-dev
+          # Not always pulled by build-dep on noble; required by gtk3 a11y
+          # (atk-bridge) and introspection (g-ir-scanner).
+          sudo apt-get install -y libatk-bridge2.0-dev gobject-introspection \
+            libgirepository1.0-dev
           # Ubuntu 24.04 ships meson 1.3.x but gtk requires >= 1.5.0.
           python3 -m pip install --user --upgrade --break-system-packages "meson>=1.5.0"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
