@@ -198,8 +198,10 @@ jobs:
             "let pkgs = import (builtins.fetchTarball { url = \"$NIXPKGS_TARBALL\"; }) {}; in pkgs.callPackage ./dist/nix/${NIX_ASSET} {}")
           echo "built: $out"
           find "$out" -name 'libgtk-3.so.0*' | head
-          # Cache must reference the store, never /usr.
+          # Cache must reference the store, stay quoted, never /usr or runner paths.
           grep -q "$out" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+          grep -q '^"$out/' "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+          ! grep -Eq '^/nix/store' "$out/lib/gtk-3.0/3.0.0/immodules.cache" || { echo "unquoted store path in cache" >&2; exit 1; }
           ! grep -q '/usr/lib' "$out/lib/gtk-3.0/3.0.0/immodules.cache" || { echo "stale /usr paths in cache" >&2; exit 1; }
 
       - name: Prune old versioned releases (keep newest)

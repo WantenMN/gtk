@@ -34,8 +34,10 @@
 # fetched by pkgs/update-fork-tarballs.sh — do not edit hash by hand.
 #
 # GTK3 loads im-wayland.so via absolute paths from immodules.cache. The
-# tarball ships a cache with baked /usr/lib paths; the installPhase rewrites
-# the prefix to $out with sed (pure text, no execution).
+# tarball ships a cache with baked absolute paths (CI runner stage path);
+# the installPhase rewrites the prefix to $out with sed (pure text, no
+# execution). olddir must exclude the leading quote so the replacement
+# preserves the surrounding quotes: "<old>/im-*.so" -> "<new>/im-*.so".
 stdenv.mkDerivation rec {
   pname = "gtk3-fork";
   version = "0.0.0-unset";
@@ -93,11 +95,15 @@ stdenv.mkDerivation rec {
     mod=$(find . -name 'im-wayland.so' | head -n 1)
     test -n "$mod"
     reldir=$(dirname "$mod" | sed 's|^\./||')
-    olddir=$(grep -o '"/[^"]*im-wayland\.so' "$cache" | head -n 1 | sed 's|"$||; s|/im-wayland\.so$||')
+    olddir=$(grep -o '"/[^"]*im-wayland\.so' "$cache" | head -n 1 | sed 's|^"||; s|/im-wayland\.so$||')
     test -n "$olddir"
     mkdir -p "$out/lib/gtk-3.0/3.0.0"
     sed "s|$olddir|$out/$reldir|g" "$cache" > "$out/lib/gtk-3.0/3.0.0/immodules.cache"
     grep -q "$out/" "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+    # Module paths must stay quoted (">...<"): an unquoted line breaks
+    # gtk_im_module_file_load() with "Error parsing context info".
+    grep -q '^"$out/' "$out/lib/gtk-3.0/3.0.0/immodules.cache"
+    ! grep -Eq '^/nix/store' "$out/lib/gtk-3.0/3.0.0/immodules.cache"
 
     runHook postInstall
   '';
